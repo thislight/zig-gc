@@ -338,7 +338,6 @@ test "gc.benchmark" {
             var arena = heap.ArenaAllocator.init(pa);
             defer arena.deinit();
 
-
             a.benchAllocator(arena.allocator(), false) catch unreachable;
         }
 
