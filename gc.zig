@@ -291,15 +291,12 @@ test "gc.benchmark" {
         };
 
         pub const args = [_]Arg{
-            Arg{ .num = 10 * 1, .size = 1024 * 1 },
-            Arg{ .num = 10 * 2, .size = 1024 * 1 },
-            Arg{ .num = 10 * 4, .size = 1024 * 1 },
-            Arg{ .num = 10 * 1, .size = 1024 * 2 },
-            Arg{ .num = 10 * 2, .size = 1024 * 2 },
-            Arg{ .num = 10 * 4, .size = 1024 * 2 },
-            Arg{ .num = 10 * 1, .size = 1024 * 4 },
-            Arg{ .num = 10 * 2, .size = 1024 * 4 },
-            Arg{ .num = 10 * 4, .size = 1024 * 4 },
+            Arg{ .num = 10 ^ 4, .size = 1 },
+            Arg{ .num = 10 ^ 4, .size = 256 },
+            Arg{ .num = 10 ^ 4, .size = 4096 },
+            Arg{ .num = 10 ^ 6, .size = 1 },
+            Arg{ .num = 10 ^ 8, .size = 1 },
+            Arg{ .num = 10 ^ 8, .size = 2 },
         };
 
         pub const iterations = 10000;
