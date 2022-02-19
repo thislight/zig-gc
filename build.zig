@@ -21,11 +21,11 @@ pub fn build(b: *Builder) void {
     b.default_step.dependOn(test_all_step);
 }
 
-fn modeToString(mode: Mode) []const u8 {
+fn modeToString(mode: std.builtin.Mode) []const u8 {
     return switch (mode) {
-        Mode.Debug => "debug",
-        Mode.ReleaseFast => "release-fast",
-        Mode.ReleaseSafe => "release-safe",
-        Mode.ReleaseSmall => "release-small",
+        .Debug => "debug",
+        .ReleaseFast => "release-fast",
+        .ReleaseSafe => "release-safe",
+        .ReleaseSmall => "release-small",
     };
 }

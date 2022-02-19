@@ -10,9 +10,10 @@ const testing = std.testing;
 pub const GcAllocator = struct {
     const PointerList = std.ArrayList(Pointer);
 
-    base: mem.Allocator,
     start: [*]const u8,
     ptrs: PointerList,
+
+    const Self = @This();
 
     const Flags = packed struct {
         checked: bool,
@@ -29,18 +30,14 @@ pub const GcAllocator = struct {
         memory: []u8,
     };
 
-    pub inline fn init(child_alloc: *mem.Allocator) GcAllocator {
+    pub inline fn init(child_alloc: mem.Allocator) Self {
         return GcAllocator{
-            .base = mem.Allocator{
-                .allocFn = allocFn,
-                .resizeFn = resizeFn,
-            },
             .start = @intToPtr([*]const u8, @frameAddress()),
             .ptrs = PointerList.init(child_alloc),
         };
     }
 
-    pub fn deinit(gc: *GcAllocator) void {
+    pub fn deinit(gc: *Self) void {
         const child_alloc = gc.childAllocator();
 
         for (gc.ptrs.items) |ptr| {
@@ -51,17 +48,17 @@ pub const GcAllocator = struct {
         gc.* = undefined;
     }
 
-    pub fn collect(gc: *GcAllocator) void {
+    pub fn collect(gc: *Self) void {
         @call(.{ .modifier = .never_inline }, collectNoInline, .{gc});
     }
 
-    pub fn collectFrame(gc: *GcAllocator, frame: []const u8) void {
+    pub fn collectFrame(gc: *Self, frame: []const u8) void {
         gc.mark(frame);
         gc.sweep();
     }
 
-    pub fn allocator(gc: *GcAllocator) *mem.Allocator {
-        return &gc.base;
+    pub fn allocator(gc: *Self) mem.Allocator {
+        return mem.Allocator.init(gc, Self.allocFn, Self.resizeFn, Self.freeFn);
     }
 
     fn collectNoInline(gc: *GcAllocator) void {
@@ -98,7 +95,6 @@ pub const GcAllocator = struct {
     }
 
     fn sweep(gc: *GcAllocator) void {
-        const child_alloc = gc.childAllocator();
         const ptrs = gc.ptrs.items;
         var i: usize = 0;
         while (i < gc.ptrs.items.len) {
@@ -126,7 +122,7 @@ pub const GcAllocator = struct {
         return null;
     }
 
-    fn freePtr(gc: *GcAllocator, ptr: *Pointer) void {
+    fn freePtr(gc: *Self, ptr: *Pointer) void {
         const child_alloc = gc.childAllocator();
         child_alloc.free(ptr.memory);
 
@@ -135,28 +131,31 @@ pub const GcAllocator = struct {
         ptr.* = gc.ptrs.popOrNull() orelse undefined;
     }
 
-    fn childAllocator(gc: *GcAllocator) *mem.Allocator {
+    fn childAllocator(gc: *Self) mem.Allocator {
         return gc.ptrs.allocator;
     }
 
-    fn free(base: *mem.Allocator, bytes: []u8) void {
-        const gc = @fieldParentPtr(GcAllocator, "base", base);
-        const child_alloc = gc.childAllocator();
-        const ptr = gc.findPtr(bytes.ptr) orelse @panic("Freeing memory not allocated by garbage collector!");
-        gc.freePtr(ptr);
+    fn free(self: *Self, bytes: []u8) void {
+        const ptr = self.findPtr(bytes.ptr) orelse @panic("Freeing memory not allocated by garbage collector!");
+        self.freePtr(ptr);
+    }
+
+    fn freeFn(self: *Self, bytes: []u8, buf_align: u29, ret_addr: usize) void {
+        _ = ret_addr;
+        _ = buf_align;
+        self.free(bytes);
     }
 
     fn allocFn(
-        base: *mem.Allocator,
+        self: *Self,
         len: usize,
         ptr_align: u29,
         len_align: u29,
         ret_addr: usize,
-    ) ![]u8 {
-        const gc = @fieldParentPtr(GcAllocator, "base", base);
-        const child_alloc = gc.childAllocator();
-        const memory = try child_alloc.allocFn(child_alloc, len, ptr_align, len_align, ret_addr);
-        try gc.ptrs.append(Pointer{
+    ) mem.Allocator.Error![]u8 {
+        const child_alloc = self.childAllocator();
+        const memory = try child_alloc.rawAlloc(len, ptr_align, len_align, ret_addr);
+        try self.ptrs.append(Pointer{
             .flags = Flags.zero,
             .memory = memory,
         });
@@ -165,19 +164,22 @@ pub const GcAllocator = struct {
     }
 
     fn resizeFn(
-        base: *mem.Allocator,
+        self: *Self,
         buf: []u8,
         buf_align: u29,
         new_len: usize,
         len_align: u29,
         ret_addr: usize,
-    ) !usize {
+    ) ?usize {
+        _ = ret_addr;
+        _ = len_align;
+        _ = buf_align;
         if (new_len == 0) {
-            free(base, buf);
-            return 0;
+            self.free(buf);
+            return null;
         }
         if (new_len > buf.len)
-            return error.OutOfMemory;
+            return null;
         return new_len;
     }
 };
@@ -190,7 +192,7 @@ var test_buf: [1024 * 1024]u8 = undefined;
 
 test "gc.collect: No leaks" {
     var fba = heap.FixedBufferAllocator.init(test_buf[0..]);
-    var gc = GcAllocator.init(&fba.allocator);
+    var gc = GcAllocator.init(fba.allocator());
     defer gc.deinit();
 
     const allocator = gc.allocator();
@@ -205,7 +207,7 @@ test "gc.collect: No leaks" {
     try testing.expectEqual(@as(usize, 2), gc.ptrs.items.len);
 }
 
-fn leak(allocator: *mem.Allocator) !void {
+fn leak(allocator: mem.Allocator) !void {
     var a = try allocator.create(Leaker);
     a.* = Leaker{ .l = try allocator.create(Leaker) };
     a.l.l = a;
@@ -213,7 +215,7 @@ fn leak(allocator: *mem.Allocator) !void {
 
 test "gc.collect: Leaks" {
     var fba = heap.FixedBufferAllocator.init(test_buf[0..]);
-    var gc = GcAllocator.init(&fba.allocator);
+    var gc = GcAllocator.init(fba.allocator());
     defer gc.deinit();
 
     const allocator = gc.allocator();
@@ -231,7 +233,7 @@ test "gc.collect: Leaks" {
 
 test "gc.free" {
     var fba = heap.FixedBufferAllocator.init(test_buf[0..]);
-    var gc = GcAllocator.init(&fba.allocator);
+    var gc = GcAllocator.init(fba.allocator());
     defer gc.deinit();
 
     const allocator = gc.allocator();
@@ -250,7 +252,7 @@ test "gc.benchmark" {
             num: usize,
             size: usize,
 
-            fn benchAllocator(a: Arg, allocator: *mem.Allocator, comptime free: bool) !void {
+            fn benchAllocator(a: Arg, allocator: mem.Allocator, comptime free: bool) !void {
                 var i: usize = 0;
                 while (i < a.num) : (i += 1) {
                     const bytes = try allocator.alloc(u8, a.size);
@@ -275,20 +277,20 @@ test "gc.benchmark" {
 
         pub fn FixedBufferAllocator(a: Arg) void {
             var fba = heap.FixedBufferAllocator.init(test_buf[0..]);
-            a.benchAllocator(&fba.allocator, false) catch unreachable;
+            a.benchAllocator(fba.allocator(), false) catch unreachable;
         }
 
         pub fn Arena_FixedBufferAllocator(a: Arg) void {
             var fba = heap.FixedBufferAllocator.init(test_buf[0..]);
-            var arena = heap.ArenaAllocator.init(&fba.allocator);
+            var arena = heap.ArenaAllocator.init(fba.allocator());
             defer arena.deinit();
 
-            a.benchAllocator(&arena.allocator, false) catch unreachable;
+            a.benchAllocator(arena.allocator(), false) catch unreachable;
         }
 
         pub fn GcAllocator_FixedBufferAllocator(a: Arg) void {
             var fba = heap.FixedBufferAllocator.init(test_buf[0..]);
-            var gc = GcAllocator.init(&fba.allocator);
+            var gc = GcAllocator.init(fba.allocator());
             defer gc.deinit();
 
             a.benchAllocator(gc.allocator(), false) catch unreachable;
@@ -307,7 +309,8 @@ test "gc.benchmark" {
             var arena = heap.ArenaAllocator.init(pa);
             defer arena.deinit();
 
-            a.benchAllocator(&arena.allocator, false) catch unreachable;
+
+            a.benchAllocator(arena.allocator(), false) catch unreachable;
         }
 
         pub fn GcAllocator_PageAllocator(a: Arg) void {
