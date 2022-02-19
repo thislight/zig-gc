@@ -135,9 +135,36 @@ pub const GcAllocator = struct {
         return gc.ptrs.allocator;
     }
 
-    fn free(self: *Self, bytes: []u8) void {
-        const ptr = self.findPtr(bytes.ptr) orelse @panic("Freeing memory not allocated by garbage collector!");
-        self.freePtr(ptr);
+    pub fn alloc(self: *Self, comptime T: type, n: usize) mem.Allocator.Error![]T {
+        return try self.allocator().alloc(T, n);
+    }
+
+    pub fn free(self: *Self, bytes: anytype) void {
+        if (comptime std.meta.trait.isManyItemPtr(@TypeOf(bytes))) {
+            const ptr = self.findPtr(bytes) orelse @panic("Freeing memory not allocated by garbage collector!");
+            self.freePtr(ptr);
+        } else if (comptime std.meta.trait.isSlice(@TypeOf(bytes))) {
+            const ptr = self.findPtr(bytes.ptr) orelse @panic("Freeing memory not allocated by garbage collector!");
+            self.freePtr(ptr);
+        } else {
+            @compileError("GcAllocator.free only support many item pointers and slices");
+        }
+    }
+
+    pub fn create(self: *Self, comptime T: type) mem.Allocator.Error!*T {
+        return try self.allocator().create(T);
+    }
+
+    pub fn destroy(self: *Self, ptr: anytype) void {
+        self.allocator().destroy(ptr);
+    }
+
+    pub fn dupe(self: *Self, comptime T: type, src: []const T) mem.Allocator.Error![]T {
+        return try self.allocator().dupe(T, src);
+    }
+
+    pub fn dupeZ(self: *Self, comptime T: type, src: []const T) mem.Allocator.Error![]T {
+        return try self.allocator().dupeZ(T, src);
     }
 
     fn freeFn(self: *Self, bytes: []u8, buf_align: u29, ret_addr: usize) void {
@@ -178,8 +205,10 @@ pub const GcAllocator = struct {
             self.free(buf);
             return null;
         }
-        if (new_len > buf.len)
-            return null;
+        if (new_len > buf.len) {
+            var ptr = self.findPtr(buf.ptr) orelse return null;
+            return self.childAllocator().rawResize(ptr.memory, buf_align, new_len, len_align, ret_addr);
+        }
         return new_len;
     }
 };
