@@ -181,7 +181,10 @@ pub const GcAllocator = struct {
         ret_addr: usize,
     ) mem.Allocator.Error![]u8 {
         const child_alloc = self.childAllocator();
-        const memory = try child_alloc.rawAlloc(len, ptr_align, len_align, ret_addr);
+        const memory = child_alloc.rawAlloc(len, ptr_align, len_align, ret_addr) catch blk: {
+            self.collect();
+            break :blk try child_alloc.rawAlloc(len, ptr_align, len_align, ret_addr);
+        };
         try self.ptrs.append(Pointer{
             .flags = Flags.zero,
             .memory = memory,
